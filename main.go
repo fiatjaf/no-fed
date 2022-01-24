@@ -2,8 +2,6 @@ package main
 
 import (
 	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"net/http"
 	"os"
@@ -25,12 +23,10 @@ type Settings struct {
 	IconSVG       string `envconfig:"ICON"`
 	PrivateKeyPEM string `envconfig:"PRIVATE_KEY"`
 	PrivateKey    *rsa.PrivateKey
-	PublicKey     rsa.PublicKey
 	PublicKeyPEM  string
 }
 
 var s Settings
-var pub litepub.LitePub
 var pg *sqlx.DB
 var log = zerolog.New(os.Stderr).Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
@@ -43,28 +39,8 @@ func main() {
 	// key stuff (needed for the activitypub integration)
 	if s.PrivateKeyPEM != "" {
 		s.PrivateKeyPEM = strings.Replace(s.PrivateKeyPEM, "$$", "\n", -1)
-		decodedskpem, _ := pem.Decode([]byte(s.PrivateKeyPEM))
-
-		sk, err := x509.ParsePKCS1PrivateKey(decodedskpem.Bytes)
-		if err != nil {
-			log.Fatal().Err(err).Msg("couldn't process private key pem.")
-		}
-
-		s.PrivateKey = sk
-		s.PublicKey = sk.PublicKey
-
-		key, err := x509.MarshalPKIXPublicKey(&sk.PublicKey)
-		if err != nil {
-			log.Fatal().Err(err).Msg("couldn't marshal public key to pem.")
-		}
-		s.PublicKeyPEM = string(pem.EncodeToMemory(&pem.Block{
-			Type:  "PUBLIC KEY",
-			Bytes: key,
-		}))
-	}
-
-	pub = litepub.LitePub{
-		PrivateKey: s.PrivateKey,
+		s.PrivateKey, _ = litepub.ParsePrivateKeyFromPEM(s.PrivateKeyPEM)
+		s.PublicKeyPEM, _ = litepub.PublicKeyToPEM(&s.PrivateKey.PublicKey)
 	}
 
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
@@ -84,7 +60,7 @@ func main() {
 			return
 		})
 
-	relayer.Router.Path("/pub").HandlerFunc(pubInbox)
+	relayer.Router.Path("/pub").Methods("POST").HandlerFunc(pubInbox)
 	relayer.Router.Path("/pub/user/{pubkey:[\\d\\w-]+}").Methods("GET").HandlerFunc(pubUserActor)
 	relayer.Router.Path("/pub/user/{pubkey:[\\d\\w-]+}/following").Methods("GET").HandlerFunc(pubUserFollowing)
 	relayer.Router.Path("/pub/user/{pubkey:[\\d\\w-]+}/followers").Methods("GET").HandlerFunc(pubUserFollowers)

@@ -4,7 +4,7 @@ go 1.17
 
 require (
 	github.com/fiatjaf/go-nostr v0.5.0
-	github.com/fiatjaf/litepub v1.0.0
+	github.com/fiatjaf/litepub v1.1.2
 	github.com/fiatjaf/relayer v1.2.0
 	github.com/gorilla/mux v1.8.0
 	github.com/jmoiron/sqlx v1.3.4
@@ -22,5 +22,3 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 )
-
-replace github.com/fiatjaf/litepub => /home/fiatjaf/comp/litepub

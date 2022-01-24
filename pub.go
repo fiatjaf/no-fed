@@ -1,32 +1,42 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io/ioutil"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/fiatjaf/go-nostr"
 	"github.com/fiatjaf/litepub"
 	"github.com/gorilla/mux"
 	"github.com/tidwall/gjson"
 )
 
 type DBNote struct {
-	Id    string `db:"id"`
-	Owner string `db:"pubkey"`
-	Name  string `db:"name"`
-	SetAt string `db:"set_at"`
-	CID   string `db:"cid"`
+	ID        string `db:"id"`
+	CreatedAt int64  `db:"created_at"`
+	PubKey    string `db:"author"`
+	Content   string `db:"content"`
 }
 
 func pubUserActor(w http.ResponseWriter, r *http.Request) {
 	pubkey := mux.Vars(r)["pubkey"]
 
-	var exists int
-	err := pg.Get(&exists, `SELECT count(*) FROM users WHERE name = $1`, pubkey)
+	var actor struct {
+		Name    string `db:"name"`
+		About   string `db:"about"`
+		Picture string `db:"picture"`
+	}
+	err := pg.Get(&actor, `
+        SELECT name, about, picture
+        FROM actors
+        WHERE pubkey = $1
+    `, pubkey)
 	if err != nil {
 		http.Error(w, "User not found", 404)
 		return
@@ -34,23 +44,25 @@ func pubUserActor(w http.ResponseWriter, r *http.Request) {
 
 	image := litepub.ActorImage{
 		Type: "Image",
-		URL:  s.ServiceURL + "/icon.svg",
+		URL:  actor.Picture,
 	}
 
-	actor := litepub.Actor{
+	w.Header().Set("Content-Type", "application/activity+json")
+	json.NewEncoder(w).Encode(litepub.Actor{
 		Base: litepub.Base{
 			Context: litepub.CONTEXT,
 			Id:      s.ServiceURL + "/pub/user/" + pubkey,
 			Type:    "Person",
 		},
 
-		Name:                      pubkey,
+		Name:                      actor.Name,
 		PreferredUsername:         pubkey,
 		Followers:                 s.ServiceURL + "/pub/user/" + pubkey + "/followers",
 		Following:                 s.ServiceURL + "/pub/user/" + pubkey + "/following",
 		ManuallyApprovesFollowers: false,
 		Image:                     image,
 		Icon:                      image,
+		Summary:                   actor.About,
 		URL:                       s.ServiceURL + "/" + pubkey,
 		Inbox:                     s.ServiceURL + "/pub",
 		Outbox:                    s.ServiceURL + "/pub/user/" + pubkey + "/outbox",
@@ -60,10 +72,7 @@ func pubUserActor(w http.ResponseWriter, r *http.Request) {
 			Owner:        s.ServiceURL + "/pub/user/" + pubkey,
 			PublicKeyPEM: s.PublicKeyPEM,
 		},
-	}
-
-	w.Header().Set("Content-Type", "application/activity+json")
-	json.NewEncoder(w).Encode(actor)
+	})
 }
 
 func pubUserFollowers(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +169,7 @@ func pubOutbox(w http.ResponseWriter, r *http.Request) {
 	creates := make([]litepub.Create, len(dbnotes))
 	for i, dbnote := range dbnotes {
 		notes[i] = makeNote(dbnote)
-		creates[i] = pub.WrapCreate(notes[i], s.ServiceURL+"/pub/create/"+dbnote.Id)
+		creates[i] = litepub.WrapCreate(notes[i], s.ServiceURL+"/pub/create/"+dbnote.ID)
 	}
 
 	page := litepub.OrderedCollectionPage{
@@ -230,15 +239,13 @@ func fetchNote(id string) (note litepub.Note, err error) {
 func makeNote(dbnote DBNote) litepub.Note {
 	return litepub.Note{
 		Base: litepub.Base{
-			Id:   s.ServiceURL + "/pub/note/" + dbnote.Id,
+			Id:   s.ServiceURL + "/pub/note/" + dbnote.ID,
 			Type: "Note",
 		},
-		Published:    dbnote.SetAt,
-		AttributedTo: s.ServiceURL + "/pub/user/" + dbnote.Owner,
-		Content: fmt.Sprintf(
-			"%s/%s: https://ipfs.io/ipfs/%s",
-			dbnote.Owner, dbnote.Name, dbnote.CID),
-		To: "https://www.w3.org/ns/activitystreams#Public",
+		Published:    time.Unix(dbnote.CreatedAt, 0).Format(time.RFC3339),
+		AttributedTo: s.ServiceURL + "/pub/user/" + dbnote.PubKey,
+		Content:      dbnote.Content,
+		To:           "https://www.w3.org/ns/activitystreams#Public",
 	}
 }
 
@@ -247,29 +254,44 @@ func pubInbox(w http.ResponseWriter, r *http.Request) {
 
 	j := gjson.ParseBytes(b)
 	typ := j.Get("type").String()
+	author := j.Get("actor").String()
+
+	// create a fake nostr keypair for this author using the private key as the hmac key
+	sk := hmac.New(sha256.New, s.PrivateKey.D.Bytes()).Sum([]byte(author))
+	privkey := hex.EncodeToString(sk)
+	pubkey, _ := nostr.GetPublicKey(privkey)
+	go pg.Exec(`
+        INSERT INTO keys (pub_actor_url, nostr_privkey, nostr_pubkey)
+        VALUES ($1, $2, $3)
+        ON CONFLICT DO NOTHING
+    `, author, privkey, pubkey)
+
 	switch typ {
+	case "Note":
+		content := j.Get("content")
+		// save a nostr event here
+		log.Print(content)
 	case "Follow":
-		actor := j.Get("actor").String()
 		object := j.Get("object").String()
 		parts := strings.Split(object, "/")
-		pubkey := parts[len(parts)-1]
+		target := parts[len(parts)-1]
 
 		_, err := pg.Exec(`
-            INSERT INTO pub_followers (pubkey, identifier)
+            INSERT INTO followers (nostr_pubkey, pub_actor_url)
             VALUES ($1, $2)
-            ON CONFLICT (pubkey, identifier) DO NOTHING
-        `, pubkey, actor)
+            ON CONFLICT (nostr_pubkey, pub_actor_url) DO NOTHING
+        `, target, author)
 
 		if err != nil && err != sql.ErrNoRows {
-			log.Warn().Err(err).Str("actor", actor).Str("object", object).
+			log.Warn().Err(err).Str("actor", author).Str("object", object).
 				Msg("error saving Follow")
 			http.Error(w, "Failed to accept Follow.", 500)
 			return
 		}
 
-		url, err := litepub.FetchInbox(actor)
-		if err != nil {
-			log.Warn().Err(err).Str("actor", actor).
+		actor, err := litepub.FetchActor(author)
+		if err != nil || actor.Inbox == "" {
+			log.Warn().Err(err).Str("actor", author).
 				Msg("didn't found an inbox from the follower")
 			http.Error(w, "Wrong Follow request.", 400)
 			return
@@ -279,12 +301,16 @@ func pubInbox(w http.ResponseWriter, r *http.Request) {
 			Base: litepub.Base{
 				Context: litepub.CONTEXT,
 				Type:    "Accept",
-				Id:      s.ServiceURL + "/pub/accept/" + actor + "/" + pubkey,
+				Id:      s.ServiceURL + "/pub/accept/" + pubkey,
 			},
 			Object: object,
 		}
-		resp, err := pub.SendSigned(
-			s.ServiceURL+"/pub/user/"+actor+"#main-key", url, accept)
+		resp, err := litepub.SendSigned(
+			s.PrivateKey,
+			s.ServiceURL+"/pub/user/"+pubkey+"#main-key",
+			actor.Inbox,
+			accept,
+		)
 
 		var b []byte
 		if resp != nil && resp.Body != nil {
@@ -310,7 +336,7 @@ func pubInbox(w http.ResponseWriter, r *http.Request) {
 
 			_, err := pg.Exec(`
                 DELETE FROM followers
-                WHERE pub_identifier = $1 AND nostr_pubkey = $2
+                WHERE pub_actor_url = $1 AND nostr_pubkey = $2
             `, actor, pubkey)
 
 			if err != nil && err != sql.ErrNoRows {
@@ -342,37 +368,32 @@ func pubInbox(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 }
 
-func pubDispatchNote(id, pubkey, name, cid string) {
-	create := pub.WrapCreate(makeNote(DBNote{
-		Id:    id,
-		Owner: pubkey,
-		Name:  name,
-		SetAt: time.Now().Format(time.RFC3339),
-		CID:   cid,
+func pubDispatchNote(id, pubkey, content string) {
+	create := litepub.WrapCreate(makeNote(DBNote{
+		ID:        id,
+		PubKey:    pubkey,
+		Content:   content,
+		CreatedAt: time.Now().Unix(),
 	}), s.ServiceURL+"/pub/create/"+id)
 	create.Context = litepub.CONTEXT
 
 	var followers []string
 	err := pg.Select(&followers, `
-SELECT follower FROM pub_followers
-WHERE target = $1
+        SELECT pub_actor_url FROM followers
+        WHERE target = $1
     `, pubkey)
 	if err != nil {
-		log.Warn().Err(err).Str("pubkey", pubkey).Str("name", name).
-			Msg("failed to fetch followers")
+		log.Warn().Err(err).Str("pubkey", pubkey).Msg("failed to fetch followers")
 		return
 	}
 
-	for _, target := range followers {
-		log.Print(target)
-		url, err := litepub.FetchInbox(target)
-		log.Print(url, " ", err)
-		if err != nil {
-			continue
-		}
-
-		resp, err := pub.SendSigned(
-			s.ServiceURL+"/pub/user/"+pubkey+"#main-key", url, create)
+	for _, identifier := range followers {
+		resp, err := litepub.SendSigned(
+			s.PrivateKey,
+			s.ServiceURL+"/pub/user/"+pubkey+"#main-key",
+			identifier,
+			create,
+		)
 		if err != nil {
 			var b []byte
 			if resp != nil && resp.Body != nil {

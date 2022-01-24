@@ -3,40 +3,21 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
+
+	"github.com/fiatjaf/litepub"
 )
 
-type WebfingerResponse struct {
-	Subject string          `json:"subject"`
-	Links   []WebfingerLink `json:"links"`
-}
-
-type WebfingerLink struct {
-	Rel  string `json:"rel"`
-	Type string `json:"type"`
-	Href string `json:"href"`
-}
-
 func webfinger(w http.ResponseWriter, r *http.Request) {
-	rsc := r.URL.Query().Get("resource")
-	parts := strings.Split(rsc, "acct:")
-	if len(parts) != 2 {
-		http.Error(w, "Wrong Webfinger resource query.", 400)
+	name, err := litepub.HandleWebfingerRequest(r)
+	if err != nil {
+		http.Error(w, "broken webfinger query: "+err.Error(), 400)
 		return
 	}
 
-	account := parts[1]
-	parts = strings.Split(account, "@")
-	if len(parts) != 2 {
-		http.Error(w, "Wrong Webfinger resource query.", 400)
-		return
-	}
-
-	name := parts[0]
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(WebfingerResponse{
-		Subject: rsc,
-		Links: []WebfingerLink{
+	json.NewEncoder(w).Encode(litepub.WebfingerResponse{
+		Subject: r.URL.Query().Get("resource"),
+		Links: []litepub.WebfingerLink{
 			{
 				Rel:  "self",
 				Type: "application/activity+json",
