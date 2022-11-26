@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 
 	"github.com/fiatjaf/litepub"
 	"github.com/fiatjaf/relayer"
@@ -16,19 +15,22 @@ import (
 )
 
 type Settings struct {
-	ServiceName   string `envconfig:"SERVICE_NAME" required:"true"`
-	ServiceURL    string `envconfig:"SERVICE_URL" required:"true"`
-	Port          string `envconfig:"PORT" required:"true"`
-	PostgresURL   string `envconfig:"DATABASE_URL" required:"true"`
-	IconSVG       string `envconfig:"ICON"`
-	PrivateKeyPEM string `envconfig:"PRIVATE_KEY"`
-	PrivateKey    *rsa.PrivateKey
-	PublicKeyPEM  string
+	ServiceName string `envconfig:"SERVICE_NAME" required:"true"`
+	ServiceURL  string `envconfig:"SERVICE_URL" required:"true"`
+	Port        string `envconfig:"PORT" required:"true"`
+	PostgresURL string `envconfig:"DATABASE_URL" required:"true"`
+	IconSVG     string `envconfig:"ICON"`
+	Secret      string `envconfig:"SECRET"`
+
+	PrivateKey   *rsa.PrivateKey
+	PublicKeyPEM string
 }
 
-var s Settings
-var pg *sqlx.DB
-var log = zerolog.New(os.Stderr).Output(zerolog.ConsoleWriter{Out: os.Stderr})
+var (
+	s   Settings
+	pg  *sqlx.DB
+	log = zerolog.New(os.Stderr).Output(zerolog.ConsoleWriter{Out: os.Stderr})
+)
 
 func main() {
 	err := envconfig.Process("", &s)
@@ -37,10 +39,15 @@ func main() {
 	}
 
 	// key stuff (needed for the activitypub integration)
-	if s.PrivateKeyPEM != "" {
-		s.PrivateKeyPEM = strings.Replace(s.PrivateKeyPEM, "$$", "\n", -1)
-		s.PrivateKey, _ = litepub.ParsePrivateKeyFromPEM(s.PrivateKeyPEM)
-		s.PublicKeyPEM, _ = litepub.PublicKeyToPEM(&s.PrivateKey.PublicKey)
+	var seed [4]byte
+	copy(seed[:], []byte(s.Secret))
+	s.PrivateKey, err = litepub.GeneratePrivateKey(seed)
+	if err != nil {
+		log.Fatal().Err(err).Msg("error deriving private key")
+	}
+	s.PublicKeyPEM, err = litepub.PublicKeyToPEM(&s.PrivateKey.PublicKey)
+	if err != nil {
+		log.Fatal().Err(err).Msg("error deriving public key")
 	}
 
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
@@ -72,16 +79,4 @@ func main() {
 
 	// start the relay/http server
 	relayer.Start(Relay{})
-}
-
-func switchHTMLJSON(next func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache")
-		if strings.Contains(r.Header.Get("Accept"), "text/html") {
-			http.ServeFile(w, r, "static/index.html")
-		} else {
-			w.Header().Set("Content-Type", "application/json")
-			next(w, r)
-		}
-	}
 }

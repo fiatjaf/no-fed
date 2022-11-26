@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fiatjaf/go-nostr"
+	"github.com/nbd-wtf/go-nostr"
 	"github.com/fiatjaf/litepub"
 	"github.com/gorilla/mux"
 	"github.com/tidwall/gjson"

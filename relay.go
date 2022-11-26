@@ -4,13 +4,23 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/fiatjaf/go-nostr"
 	"github.com/fiatjaf/relayer"
+	"github.com/nbd-wtf/go-nostr"
 )
 
-type Relay struct{}
+type Relay struct {
+	storage Storage
+}
 
-func (relay Relay) Name() string { return "no-fed" }
+func (r Relay) Name() string {
+	return "no-fed"
+}
+
+func (r Relay) Storage() relayer.Storage {
+	return r.storage
+}
+
+func (r Relay) OnInitialized() {}
 
 func (relay Relay) Init() error {
 	filters := relayer.GetListeningFilters()
@@ -21,7 +31,23 @@ func (relay Relay) Init() error {
 	return nil
 }
 
-func (relay Relay) SaveEvent(evt *nostr.Event) error {
+func (r Relay) AcceptEvent(evt *nostr.Event) bool {
+	// block events that are too large
+	jsonb, _ := json.Marshal(evt)
+	if len(jsonb) > 10000 {
+		return false
+	}
+
+	return true
+}
+
+type Storage struct{}
+
+func (s Storage) Init() error {
+	return nil
+}
+
+func (s Storage) SaveEvent(evt *nostr.Event) error {
 	// here instead of saving the event we turn it into activitypub things
 	if len(evt.Content) > 1000 {
 		return errors.New("event content too large")
@@ -69,8 +95,12 @@ func (relay Relay) SaveEvent(evt *nostr.Event) error {
 	return nil
 }
 
-func (relay Relay) QueryEvents(
-	filter *nostr.EventFilter,
-) (events []nostr.Event, err error) {
+func (s Storage) QueryEvents(filter *nostr.Filter) (events []nostr.Event, err error) {
+	// TODO search fedi servers
 	return nil, nil
+}
+
+func (s Storage) DeleteEvent(id string, pubkey string) error {
+	// TODO send tombstone to fedi servers?
+	return nil
 }
