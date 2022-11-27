@@ -6,10 +6,11 @@ require (
 	github.com/fiatjaf/litepub v1.1.2
 	github.com/fiatjaf/relayer v1.5.2
 	github.com/gorilla/mux v1.8.0
+	github.com/grokify/html-strip-tags-go v0.0.1
 	github.com/jmoiron/sqlx v1.3.4
 	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/lib/pq v1.10.4
-	github.com/nbd-wtf/go-nostr v0.8.2
+	github.com/nbd-wtf/go-nostr v0.8.3
 	github.com/rs/zerolog v1.26.1
 	github.com/tidwall/gjson v1.14.1
 )
@@ -29,3 +30,5 @@ require (
 )
 
 replace github.com/fiatjaf/litepub => /home/fiatjaf/comp/litepub
+
+replace github.com/nbd-wtf/go-nostr => /home/fiatjaf/comp/go-nostr

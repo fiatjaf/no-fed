@@ -2,10 +2,11 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 
+	"github.com/fiatjaf/litepub"
 	"github.com/fiatjaf/relayer"
 	"github.com/nbd-wtf/go-nostr"
+	"golang.org/x/exp/slices"
 )
 
 type Relay struct {
@@ -48,59 +49,77 @@ func (s Storage) Init() error {
 }
 
 func (s Storage) SaveEvent(evt *nostr.Event) error {
-	// here instead of saving the event we turn it into activitypub things
-	if len(evt.Content) > 1000 {
-		return errors.New("event content too large")
-	}
-
-	switch evt.Kind {
-	case nostr.KindSetMetadata:
-		var m struct {
-			Name    string `json:"name"`
-			About   string `json:"about"`
-			Picture string `json:"picture"`
-		}
-		if err := json.Unmarshal([]byte(evt.Content), &m); err != nil {
-			return errors.New("metadata JSON is invalid")
-		}
-
-		_, err := pg.Exec(`
-            INSERT INTO actors (pubkey, created_at, name, about, picture)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (pubkey) DO UPDATE SET
-                created_at = excluded.created_at,
-                name = excluded.name,
-                about = excluded.about,
-                picture = excluded.picture
-              WHERE created_at < excluded.created_at
-        `, evt.PubKey, evt.CreatedAt, m.Name, m.About, m.Picture)
-		if err != nil {
-			log.Error().Err(err).Interface("event", evt).Msg("failed to save set_metadata")
-		}
-	case nostr.KindTextNote:
-		_, err := pg.Exec(`
-            INSERT INTO notes (id, pubkey, created_at, content)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (id) DO NOTHING
-        `, evt.ID, evt.PubKey, evt.CreatedAt, evt.Content)
-		if err != nil {
-			log.Error().Err(err).Interface("event", evt).Msg("failed to save text_note")
-		}
-	case nostr.KindContactList:
-	case nostr.KindDeletion:
-	default:
-		return nil
-	}
-
+	// we don't store anything
 	return nil
 }
 
 func (s Storage) QueryEvents(filter *nostr.Filter) (events []nostr.Event, err error) {
-	// TODO search fedi servers
+	// search activitypub servers for these specific notes
+	if len(filter.IDs) > 0 {
+		for _, id := range filter.IDs {
+			var noteUrl string
+			if err := pg.Get(&noteUrl, "SELECT pub_note_url FROM notes WHERE nostr_event_id = $1", id); err != nil {
+				continue
+			}
+
+			note, err := litepub.FetchNote(noteUrl)
+			if err != nil {
+				continue
+			}
+			evt := nostrEventFromPubNote(note)
+			events = append(events, evt)
+		}
+
+		return events, nil
+	}
+
+	// search activitypub servers for stuff from these authors
+	for _, pubkey := range filter.Authors {
+		var actorUrl string
+		if err := pg.Get(&actorUrl, "SELECT pub_actor_url FROM keys WHERE pubkey = $1", pubkey); err != nil {
+			continue
+		}
+
+		actor, err := litepub.FetchActor(actorUrl)
+		if err != nil {
+			continue
+		}
+
+		if slices.Contains(filter.Kinds, 0) {
+			// return actor metadata
+			events = append(events, nostrEventFromActorMetadata(actor))
+		}
+
+		if slices.Contains(filter.Kinds, 1) {
+			// return actor notes
+			notes, err := litepub.FetchNotes(actor.Outbox)
+			if err == nil {
+				for _, note := range notes {
+					events = append(events, nostrEventFromPubNote(&note))
+				}
+			}
+		}
+
+		if slices.Contains(filter.Kinds, 3) {
+			// return actor follows
+			events = append(events, nostrEventFromActorFollows(actor))
+		}
+	}
+
+	// search activity pub for replies to a note
+	for _, id := range filter.Tags["e"] {
+		var url string
+		if err := pg.Get(&url, "SELECT pub_note_url FROM notes WHERE nostr_event_id  = $1", id); err == nil {
+			if note, err := litepub.FetchNote(url); err == nil {
+				evt := nostrEventFromPubNote(note)
+				events = append(events, evt)
+			}
+		}
+	}
+
 	return nil, nil
 }
 
 func (s Storage) DeleteEvent(id string, pubkey string) error {
-	// TODO send tombstone to fedi servers?
 	return nil
 }

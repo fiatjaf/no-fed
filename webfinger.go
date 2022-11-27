@@ -14,6 +14,8 @@ func webfinger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Debug().Str("name", name).Msg("got webfinger request")
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(litepub.WebfingerResponse{
 		Subject: r.URL.Query().Get("resource"),

@@ -1,86 +1,53 @@
 package main
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"io/ioutil"
 	"net/http"
 	"strings"
-	"time"
 
-	"github.com/nbd-wtf/go-nostr"
 	"github.com/fiatjaf/litepub"
 	"github.com/gorilla/mux"
+	"github.com/nbd-wtf/go-nostr"
 	"github.com/tidwall/gjson"
 )
 
-type DBNote struct {
-	ID        string `db:"id"`
-	CreatedAt int64  `db:"created_at"`
-	PubKey    string `db:"author"`
-	Content   string `db:"content"`
-}
-
 func pubUserActor(w http.ResponseWriter, r *http.Request) {
 	pubkey := mux.Vars(r)["pubkey"]
-
-	var actor struct {
-		Name    string `db:"name"`
-		About   string `db:"about"`
-		Picture string `db:"picture"`
-	}
-	err := pg.Get(&actor, `
-        SELECT name, about, picture
-        FROM actors
-        WHERE pubkey = $1
-    `, pubkey)
-	if err != nil {
-		http.Error(w, "User not found", 404)
+	if !isPublicKey(pubkey) {
+		http.Error(w, "invalid public key", 400)
 		return
 	}
 
-	image := litepub.ActorImage{
-		Type: "Image",
-		URL:  actor.Picture,
+	log.Debug().Str("pubkey", pubkey).Msg("got pub actor request")
+
+	// try to get profile information from relays
+	events := querySync(nostr.Filter{Authors: []string{pubkey}, Kinds: []int{0}}, 1)
+	if len(events) == 0 {
+		http.Error(w, "user not found", 404)
+		return
 	}
 
+	actor := pubActorFromNostrEvent(events[0])
+
 	w.Header().Set("Content-Type", "application/activity+json")
-	json.NewEncoder(w).Encode(litepub.Actor{
-		Base: litepub.Base{
-			Context: litepub.CONTEXT,
-			Id:      s.ServiceURL + "/pub/user/" + pubkey,
-			Type:    "Person",
-		},
-
-		Name:                      actor.Name,
-		PreferredUsername:         pubkey,
-		Followers:                 s.ServiceURL + "/pub/user/" + pubkey + "/followers",
-		Following:                 s.ServiceURL + "/pub/user/" + pubkey + "/following",
-		ManuallyApprovesFollowers: false,
-		Image:                     image,
-		Icon:                      image,
-		Summary:                   actor.About,
-		URL:                       s.ServiceURL + "/" + pubkey,
-		Inbox:                     s.ServiceURL + "/pub",
-		Outbox:                    s.ServiceURL + "/pub/user/" + pubkey + "/outbox",
-
-		PublicKey: litepub.PublicKey{
-			Id:           s.ServiceURL + "/pub/user/" + pubkey + "#main-key",
-			Owner:        s.ServiceURL + "/pub/user/" + pubkey,
-			PublicKeyPEM: s.PublicKeyPEM,
-		},
-	})
+	json.NewEncoder(w).Encode(actor)
 }
 
 func pubUserFollowers(w http.ResponseWriter, r *http.Request) {
 	pubkey := mux.Vars(r)["pubkey"]
+	if !isPublicKey(pubkey) {
+		http.Error(w, "invalid public key", 400)
+		return
+	}
 
+	log.Debug().Str("pubkey", pubkey).Msg("got followers request")
+
+	// TODO: fill in this
 	followers := make([]string, 0)
 
-	page := litepub.OrderedCollectionPage{
+	page := litepub.OrderedCollectionPage[string]{
 		Base: litepub.Base{
 			Type: "OrderedCollectionPage",
 			Id:   s.ServiceURL + "/pub/user/" + pubkey + "/followers?page=1",
@@ -89,6 +56,7 @@ func pubUserFollowers(w http.ResponseWriter, r *http.Request) {
 		TotalItems:   len(followers),
 		OrderedItems: followers,
 	}
+	jpage, _ := json.Marshal(page)
 
 	w.Header().Set("Content-Type", "application/activity+json")
 	if r.URL.Query().Get("page") != "" {
@@ -101,7 +69,7 @@ func pubUserFollowers(w http.ResponseWriter, r *http.Request) {
 				Type:    "OrderedCollection",
 				Id:      s.ServiceURL + "/pub/user/" + pubkey + "/followers",
 			},
-			First:      page,
+			First:      json.RawMessage(jpage),
 			TotalItems: len(followers),
 		}
 		json.NewEncoder(w).Encode(collection)
@@ -110,10 +78,17 @@ func pubUserFollowers(w http.ResponseWriter, r *http.Request) {
 
 func pubUserFollowing(w http.ResponseWriter, r *http.Request) {
 	pubkey := mux.Vars(r)["pubkey"]
+	if !isPublicKey(pubkey) {
+		http.Error(w, "invalid public key", 400)
+		return
+	}
 
+	log.Debug().Str("pubkey", pubkey).Msg("got following request")
+
+	// TODO: fill in this
 	following := make([]string, 0)
 
-	page := litepub.OrderedCollectionPage{
+	page := litepub.OrderedCollectionPage[string]{
 		Base: litepub.Base{
 			Type: "OrderedCollectionPage",
 			Id:   s.ServiceURL + "/pub/user/" + pubkey + "/following?page=1",
@@ -122,6 +97,7 @@ func pubUserFollowing(w http.ResponseWriter, r *http.Request) {
 		TotalItems:   len(following),
 		OrderedItems: following,
 	}
+	jpage, _ := json.Marshal(page)
 
 	w.Header().Set("Content-Type", "application/activity+json")
 	if r.URL.Query().Get("page") != "" {
@@ -134,7 +110,7 @@ func pubUserFollowing(w http.ResponseWriter, r *http.Request) {
 				Type:    "OrderedCollection",
 				Id:      s.ServiceURL + "/pub/user/" + pubkey + "/following",
 			},
-			First:      page,
+			First:      json.RawMessage(jpage),
 			TotalItems: len(following),
 		}
 		json.NewEncoder(w).Encode(collection)
@@ -143,110 +119,64 @@ func pubUserFollowing(w http.ResponseWriter, r *http.Request) {
 
 func pubOutbox(w http.ResponseWriter, r *http.Request) {
 	pubkey := mux.Vars(r)["pubkey"]
-
-	var dbnotes []DBNote
-	err := pg.Select(&dbnotes, `
-        SELECT
-            history.id::text AS id,
-            pubkey,
-            name,
-            set_at,
-            history.cid
-        FROM history
-        INNER JOIN head ON history.record_id = head.id
-        WHERE pubkey = $1
-        ORDER BY history.set_at DESC
-    `, pubkey)
-	if err == sql.ErrNoRows {
-		dbnotes = make([]DBNote, 0)
-	} else if err != nil && err != sql.ErrNoRows {
-		log.Warn().Err(err).Str("pubkey", pubkey).Msg("error fetching stuff from database")
-		http.Error(w, "Failed to fetch activities.", 500)
+	if !isPublicKey(pubkey) {
+		http.Error(w, "invalid public key", 400)
 		return
 	}
 
-	notes := make([]litepub.Note, len(dbnotes))
-	creates := make([]litepub.Create, len(dbnotes))
-	for i, dbnote := range dbnotes {
-		notes[i] = makeNote(dbnote)
-		creates[i] = litepub.WrapCreate(notes[i], s.ServiceURL+"/pub/create/"+dbnote.ID)
+	log.Debug().Str("pubkey", pubkey).Msg("got outbox request")
+
+	events := querySync(nostr.Filter{Kinds: []int{1}, Authors: []string{pubkey}}, 40)
+	creates := make([]litepub.Create[litepub.Note], len(events))
+	for i, evt := range events {
+		note := pubNoteFromNostrEvent(evt)
+		creates[i] = litepub.WrapCreate(note, s.ServiceURL+"/pub/create/"+evt.ID)
 	}
 
-	page := litepub.OrderedCollectionPage{
+	page := litepub.OrderedCollectionPage[litepub.Create[litepub.Note]]{
 		Base: litepub.Base{
 			Type: "OrderedCollectionPage",
-			Id:   s.ServiceURL + "/pub/user/" + pubkey + "/followers?page=1",
+			Id:   s.ServiceURL + "/pub/user/" + pubkey + "/outbox",
 		},
-		PartOf:       s.ServiceURL + "/pub/user/" + pubkey + "/followers",
+		PartOf:       s.ServiceURL + "/pub/user/" + pubkey + "/outbox",
 		TotalItems:   len(creates),
 		OrderedItems: creates,
 	}
+	jpage, _ := json.Marshal(page)
+
+	collection := litepub.OrderedCollection{
+		Base: litepub.Base{
+			Context: litepub.CONTEXT,
+			Type:    "OrderedCollection",
+			Id:      s.ServiceURL + "/pub/user/" + pubkey + "/outbox",
+		},
+		First:      json.RawMessage(jpage),
+		TotalItems: page.TotalItems,
+	}
 
 	w.Header().Set("Content-Type", "application/activity+json")
-	if r.URL.Query().Get("max_id") != "" {
-		page.Base.Context = litepub.CONTEXT
-		json.NewEncoder(w).Encode(page)
-	} else {
-		collection := litepub.OrderedCollection{
-			Base: litepub.Base{
-				Context: litepub.CONTEXT,
-				Type:    "OrderedCollection",
-				Id:      s.ServiceURL + "/pub/user/" + pubkey + "/outbox",
-			},
-			First:      page,
-			TotalItems: page.TotalItems,
-		}
-		json.NewEncoder(w).Encode(collection)
-	}
+	json.NewEncoder(w).Encode(collection)
 }
 
 func pubNote(w http.ResponseWriter, r *http.Request) {
-	id := mux.Vars(r)["id"]
-
-	note, err := fetchNote(id)
-	if err != nil {
-		http.Error(w, "Note not found", 404)
+	noteId := mux.Vars(r)["id"]
+	if !isNoteId(noteId) {
+		http.Error(w, "invalid note id", 400)
 		return
 	}
+
+	// it's the same for nostr events
+	eventId := noteId
+
+	events := querySync(nostr.Filter{IDs: []string{eventId}}, 1)
+	if len(events) == 0 {
+		http.Error(w, "couldn't find note", 404)
+		return
+	}
+	note := pubNoteFromNostrEvent(events[0])
 
 	w.Header().Set("Content-Type", "application/activity+json")
 	json.NewEncoder(w).Encode(note)
-}
-
-func fetchNote(id string) (note litepub.Note, err error) {
-	var dbnote DBNote
-	err = pg.Get(&dbnote, `
-        SELECT
-            history.id::text AS id,
-            pubkey,
-            name,
-            set_at,
-            history.cid
-        FROM history
-        INNER JOIN head ON history.record_id = head.id
-        WHERE history.id = $1
-        ORDER BY history.set_at DESC
-    `, id)
-	if err != nil {
-		return
-	}
-
-	note = makeNote(dbnote)
-	note.Base.Context = litepub.CONTEXT
-	return
-}
-
-func makeNote(dbnote DBNote) litepub.Note {
-	return litepub.Note{
-		Base: litepub.Base{
-			Id:   s.ServiceURL + "/pub/note/" + dbnote.ID,
-			Type: "Note",
-		},
-		Published:    time.Unix(dbnote.CreatedAt, 0).Format(time.RFC3339),
-		AttributedTo: s.ServiceURL + "/pub/user/" + dbnote.PubKey,
-		Content:      dbnote.Content,
-		To:           "https://www.w3.org/ns/activitystreams#Public",
-	}
 }
 
 func pubInbox(w http.ResponseWriter, r *http.Request) {
@@ -254,22 +184,14 @@ func pubInbox(w http.ResponseWriter, r *http.Request) {
 
 	j := gjson.ParseBytes(b)
 	typ := j.Get("type").String()
-	author := j.Get("actor").String()
+	actor := j.Get("actor").String()
 
-	// create a fake nostr keypair for this author using the private key as the hmac key
-	sk := hmac.New(sha256.New, s.PrivateKey.D.Bytes()).Sum([]byte(author))
-	privkey := hex.EncodeToString(sk)
-	pubkey, _ := nostr.GetPublicKey(privkey)
-	go pg.Exec(`
-        INSERT INTO keys (pub_actor_url, nostr_privkey, nostr_pubkey)
-        VALUES ($1, $2, $3)
-        ON CONFLICT DO NOTHING
-    `, author, privkey, pubkey)
+	_, pubkey := nostrKeysForPubActor(actor)
 
 	switch typ {
 	case "Note":
 		content := j.Get("content")
-		// save a nostr event here
+		// TODO: save a nostr event here
 		log.Print(content)
 	case "Follow":
 		object := j.Get("object").String()
@@ -280,20 +202,20 @@ func pubInbox(w http.ResponseWriter, r *http.Request) {
             INSERT INTO followers (nostr_pubkey, pub_actor_url)
             VALUES ($1, $2)
             ON CONFLICT (nostr_pubkey, pub_actor_url) DO NOTHING
-        `, target, author)
+        `, target, actor)
 
 		if err != nil && err != sql.ErrNoRows {
-			log.Warn().Err(err).Str("actor", author).Str("object", object).
+			log.Warn().Err(err).Str("actor", actor).Str("object", object).
 				Msg("error saving Follow")
-			http.Error(w, "Failed to accept Follow.", 500)
+			http.Error(w, "failed to accept Follow", 500)
 			return
 		}
 
-		actor, err := litepub.FetchActor(author)
+		actor, err := litepub.FetchActor(actor)
 		if err != nil || actor.Inbox == "" {
-			log.Warn().Err(err).Str("actor", author).
+			log.Warn().Err(err).Str("actor", actor.Id).
 				Msg("didn't found an inbox from the follower")
-			http.Error(w, "Wrong Follow request.", 400)
+			http.Error(w, "wrong Follow request", 400)
 			return
 		}
 
@@ -320,7 +242,7 @@ func pubInbox(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Warn().Err(err).Str("body", string(b)).
 				Msg("failed to send Accept")
-			http.Error(w, "Failed to send Accept.", 503)
+			http.Error(w, "failed to send Accept", 503)
 			return
 		}
 		log.Print(string(b))
@@ -342,7 +264,7 @@ func pubInbox(w http.ResponseWriter, r *http.Request) {
 			if err != nil && err != sql.ErrNoRows {
 				log.Warn().Err(err).Str("actor", actor).Str("object", object).
 					Msg("error undoing Follow")
-				http.Error(w, "Failed to accept Undo.", 500)
+				http.Error(w, "failed to accept Undo", 500)
 				return
 			}
 			break
@@ -357,7 +279,7 @@ func pubInbox(w http.ResponseWriter, r *http.Request) {
 
 		if err != nil && err != sql.ErrNoRows {
 			log.Warn().Err(err).Str("actor", actor).Msg("error accepting Delete")
-			http.Error(w, "Failed to accept Delete.", 500)
+			http.Error(w, "failed to accept Delete", 500)
 			return
 		}
 		break
@@ -366,50 +288,4 @@ func pubInbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(200)
-}
-
-func pubDispatchNote(id, pubkey, content string) {
-	create := litepub.WrapCreate(makeNote(DBNote{
-		ID:        id,
-		PubKey:    pubkey,
-		Content:   content,
-		CreatedAt: time.Now().Unix(),
-	}), s.ServiceURL+"/pub/create/"+id)
-	create.Context = litepub.CONTEXT
-
-	var followers []string
-	err := pg.Select(&followers, `
-        SELECT pub_actor_url FROM followers
-        WHERE target = $1
-    `, pubkey)
-	if err != nil {
-		log.Warn().Err(err).Str("pubkey", pubkey).Msg("failed to fetch followers")
-		return
-	}
-
-	for _, identifier := range followers {
-		resp, err := litepub.SendSigned(
-			s.PrivateKey,
-			s.ServiceURL+"/pub/user/"+pubkey+"#main-key",
-			identifier,
-			create,
-		)
-		if err != nil {
-			var b []byte
-			if resp != nil && resp.Body != nil {
-				b, _ = ioutil.ReadAll(resp.Body)
-			}
-			log.Warn().Err(err).Str("body", string(b)).
-				Msg("failed to send Accept")
-			continue
-		}
-
-		log.Print(resp.Request.Header)
-		log.Print(resp.StatusCode)
-		var b []byte
-		if resp != nil && resp.Body != nil {
-			b, _ = ioutil.ReadAll(resp.Body)
-			log.Print(string(b))
-		}
-	}
 }

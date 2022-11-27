@@ -13,31 +13,15 @@ func initDB(dburl string) (*sqlx.DB, error) {
 	}
 
 	_, err = db.Exec(`
--- events on the nostr side (created only from pub incoming things)
-CREATE FUNCTION tags_to_tagvalues(jsonb) RETURNS text[]
-    AS 'SELECT array_agg(t->>1) FROM (SELECT jsonb_array_elements($1) AS t)s;'
-    LANGUAGE SQL
-    IMMUTABLE
-    RETURNS NULL ON NULL INPUT;
-
-CREATE TABLE IF NOT EXISTS event (
-  id text NOT NULL,
-  pubkey text NOT NULL,
-  created_at integer NOT NULL,
-  kind integer NOT NULL,
-  tags jsonb NOT NULL,
-  content text NOT NULL,
-  sig text NOT NULL,
-
-  tagvalues text[] GENERATED ALWAYS AS (tags_to_tagvalues(tags)) STORED
+-- reverse key map of pub profiles
+CREATE TABLE IF NOT EXISTS keys (
+  pub_actor_url text NOT NULL,
+  nostr_privkey text NOT NULL,
+  nostr_pubkey text PRIMARY KEY
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS ididx ON event (id);
-CREATE UNIQUE INDEX IF NOT EXISTS pubkeytimeidx ON event (pubkey, created_at);
-CREATE INDEX IF NOT EXISTS arbitrarytagvalues ON event USING gin (tagvalues);
-
--- things that are translated from pub to nostr
-CREATE TABLE followers (
+-- pub profiles that are following nostr pubkeys
+CREATE TABLE IF NOT EXISTS followers (
   nostr_pubkey text NOT NULL,
   pub_actor_url text NOT NULL,
 
@@ -45,29 +29,16 @@ CREATE TABLE followers (
 );
 CREATE INDEX IF NOT EXISTS pubfollowersidx ON followers (nostr_pubkey);
 
-CREATE TABLE keys (
-  pub_actor_url text NOT NULL,
-  nostr_privkey text NOT NULL,
-  nostr_pubkey text PRIMARY KEY
+-- reverse map of nostr event ids to pub notes
+CREATE TABLE IF NOT EXISTS notes (
+  pub_note_url text NOT NULL,
+  nostr_event_id text PRIMARY KEY
 );
 
--- things that exist only on the pub side (created from nostr events received)
-CREATE TABLE actors (
-  pubkey text PRIMARY KEY,
-  created_at int NOT NULL,
-  name text,
-  about text,
-  picture text
-);
-
-CREATE TABLE notes (
-  id text PRIMARY KEY,
-  pubkey text NOT NULL,
-  created_at int NOT NULL,
-  content text NOT NULL
-);
-CREATE INDEX IF NO EXISTS notepubkeyidx ON notes (pubkey);
+-- TODO: map of actual nostr pubkeys to relays and of nostr event ids to relays
     `)
-	relayer.Log.Print(err)
+	if err != nil {
+		relayer.Log.Print(err)
+	}
 	return db, nil
 }
