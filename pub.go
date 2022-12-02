@@ -15,21 +15,23 @@ import (
 
 func pubUserActor(w http.ResponseWriter, r *http.Request) {
 	pubkey := mux.Vars(r)["pubkey"]
-	if !isPublicKey(pubkey) {
-		http.Error(w, "invalid public key", 400)
-		return
-	}
-
 	log.Debug().Str("pubkey", pubkey).Msg("got pub actor request")
 
-	// try to get profile information from relays
-	events := querySync(nostr.Filter{Authors: []string{pubkey}, Kinds: []int{0}}, 1)
-	if len(events) == 0 {
-		http.Error(w, "user not found", 404)
-		return
+	// try to get cached set_metadata event
+	var evt *nostr.Event
+	evt = getReplaceableEvent(pubkey, 0)
+	if evt == nil {
+		// try to get profile information from relays
+		events := querySync(nostr.Filter{Authors: []string{pubkey}, Kinds: []int{0}}, 1)
+		if len(events) == 0 {
+			http.Error(w, "user not found", 404)
+			return
+		}
+		go cacheEvent(events[0])
+		evt = &events[0]
 	}
 
-	actor := pubActorFromNostrEvent(events[0])
+	actor := pubActorFromNostrEvent(*evt)
 
 	w.Header().Set("Content-Type", "application/activity+json")
 	json.NewEncoder(w).Encode(actor)
@@ -37,11 +39,6 @@ func pubUserActor(w http.ResponseWriter, r *http.Request) {
 
 func pubUserFollowers(w http.ResponseWriter, r *http.Request) {
 	pubkey := mux.Vars(r)["pubkey"]
-	if !isPublicKey(pubkey) {
-		http.Error(w, "invalid public key", 400)
-		return
-	}
-
 	log.Debug().Str("pubkey", pubkey).Msg("got followers request")
 
 	// TODO: fill in this
@@ -60,14 +57,12 @@ func pubUserFollowers(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/activity+json")
 	if r.URL.Query().Get("page") != "" {
-		page.Base.Context = litepub.CONTEXT
 		json.NewEncoder(w).Encode(page)
 	} else {
 		collection := litepub.OrderedCollection{
 			Base: litepub.Base{
-				Context: litepub.CONTEXT,
-				Type:    "OrderedCollection",
-				Id:      s.ServiceURL + "/pub/user/" + pubkey + "/followers",
+				Type: "OrderedCollection",
+				Id:   s.ServiceURL + "/pub/user/" + pubkey + "/followers",
 			},
 			First:      json.RawMessage(jpage),
 			TotalItems: len(followers),
@@ -78,11 +73,6 @@ func pubUserFollowers(w http.ResponseWriter, r *http.Request) {
 
 func pubUserFollowing(w http.ResponseWriter, r *http.Request) {
 	pubkey := mux.Vars(r)["pubkey"]
-	if !isPublicKey(pubkey) {
-		http.Error(w, "invalid public key", 400)
-		return
-	}
-
 	log.Debug().Str("pubkey", pubkey).Msg("got following request")
 
 	// TODO: fill in this
@@ -101,14 +91,12 @@ func pubUserFollowing(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/activity+json")
 	if r.URL.Query().Get("page") != "" {
-		page.Base.Context = litepub.CONTEXT
 		json.NewEncoder(w).Encode(page)
 	} else {
 		collection := litepub.OrderedCollection{
 			Base: litepub.Base{
-				Context: litepub.CONTEXT,
-				Type:    "OrderedCollection",
-				Id:      s.ServiceURL + "/pub/user/" + pubkey + "/following",
+				Type: "OrderedCollection",
+				Id:   s.ServiceURL + "/pub/user/" + pubkey + "/following",
 			},
 			First:      json.RawMessage(jpage),
 			TotalItems: len(following),
@@ -119,11 +107,6 @@ func pubUserFollowing(w http.ResponseWriter, r *http.Request) {
 
 func pubOutbox(w http.ResponseWriter, r *http.Request) {
 	pubkey := mux.Vars(r)["pubkey"]
-	if !isPublicKey(pubkey) {
-		http.Error(w, "invalid public key", 400)
-		return
-	}
-
 	log.Debug().Str("pubkey", pubkey).Msg("got outbox request")
 
 	events := querySync(nostr.Filter{Kinds: []int{1}, Authors: []string{pubkey}}, 40)
@@ -146,9 +129,8 @@ func pubOutbox(w http.ResponseWriter, r *http.Request) {
 
 	collection := litepub.OrderedCollection{
 		Base: litepub.Base{
-			Context: litepub.CONTEXT,
-			Type:    "OrderedCollection",
-			Id:      s.ServiceURL + "/pub/user/" + pubkey + "/outbox",
+			Type: "OrderedCollection",
+			Id:   s.ServiceURL + "/pub/user/" + pubkey + "/outbox",
 		},
 		First:      json.RawMessage(jpage),
 		TotalItems: page.TotalItems,
@@ -160,11 +142,6 @@ func pubOutbox(w http.ResponseWriter, r *http.Request) {
 
 func pubNote(w http.ResponseWriter, r *http.Request) {
 	noteId := mux.Vars(r)["id"]
-	if !isNoteId(noteId) {
-		http.Error(w, "invalid note id", 400)
-		return
-	}
-
 	// it's the same for nostr events
 	eventId := noteId
 
@@ -221,9 +198,8 @@ func pubInbox(w http.ResponseWriter, r *http.Request) {
 
 		accept := litepub.Accept{
 			Base: litepub.Base{
-				Context: litepub.CONTEXT,
-				Type:    "Accept",
-				Id:      s.ServiceURL + "/pub/accept/" + pubkey,
+				Type: "Accept",
+				Id:   s.ServiceURL + "/pub/accept/" + pubkey,
 			},
 			Object: object,
 		}

@@ -198,19 +198,3 @@ func pubActorFromNostrEvent(event nostr.Event) litepub.Actor {
 		},
 	}
 }
-
-func isPublicKey(pubkey string) bool {
-	v, err := hex.DecodeString(pubkey)
-	if err != nil {
-		return false
-	}
-	return len(v) == 32
-}
-
-func isNoteId(noteId string) bool {
-	v, err := hex.DecodeString(noteId)
-	if err != nil {
-		return false
-	}
-	return len(v) == 32
-}
