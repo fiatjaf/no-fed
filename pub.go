@@ -178,13 +178,12 @@ func pubOutbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func pubNote(w http.ResponseWriter, r *http.Request) {
-	pubkey := mux.Vars(r)["pubkey"]
 	noteId := mux.Vars(r)["id"]
 
 	// it's the same for nostr events
 	eventId := noteId
 
-	getNotesForPubkey(pubkey)
+	getCachedNote(noteId)
 
 	events := querySync(nostr.Filter{IDs: []string{eventId}}, 1)
 	if len(events) == 0 {

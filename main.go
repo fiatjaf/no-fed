@@ -88,7 +88,7 @@ func main() {
 	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/following").Methods("GET").HandlerFunc(pubUserFollowing)
 	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/followers").Methods("GET").HandlerFunc(pubUserFollowers)
 	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/outbox").Methods("GET").HandlerFunc(pubOutbox)
-	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/note/{id:[A-Fa-f0-9]{64}}").Methods("GET").HandlerFunc(pubNote)
+	relayer.Router.Path("/pub/note/{id:[A-Fa-f0-9]{64}}").Methods("GET").HandlerFunc(pubNote)
 	relayer.Router.Path("/.well-known/webfinger").HandlerFunc(webfinger)
 	relayer.Router.Path("/.well-known/nostr.json").HandlerFunc(handleNip05)
 

@@ -39,8 +39,8 @@ CREATE TABLE IF NOT EXISTS notes (
 CREATE TABLE IF NOT EXISTS cache (
   key text PRIMARY KEY,
   value text NOT NULL,
-  time int,
-  expiration int
+  time timestamp,
+  expiration timestamp
 );
 CREATE INDEX IF NOT EXISTS prefixmatch ON cache(key text_pattern_ops);
 CREATE INDEX IF NOT EXISTS cachedeventorder ON cache (time);
