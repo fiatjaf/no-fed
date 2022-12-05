@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/fiatjaf/litepub"
 	"github.com/fiatjaf/relayer"
@@ -57,6 +58,7 @@ func main() {
 		return
 	}
 
+	// logger
 	zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	log = log.With().Timestamp().Logger()
 
@@ -66,6 +68,12 @@ func main() {
 		log.Fatal().Err(err).Msg("couldn't connect to postgres")
 		return
 	}
+
+	// cache expirer
+	go func() {
+		time.Sleep(2 * time.Hour)
+		pg.Exec("DELETE FROM cache WHERE expiration < now()")
+	}()
 
 	// define routes
 	relayer.Router.Path("/icon.svg").Methods("GET").HandlerFunc(
@@ -80,7 +88,7 @@ func main() {
 	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/following").Methods("GET").HandlerFunc(pubUserFollowing)
 	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/followers").Methods("GET").HandlerFunc(pubUserFollowers)
 	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/outbox").Methods("GET").HandlerFunc(pubOutbox)
-	relayer.Router.Path("/pub/note/{id:[A-Fa-f0-9]{64}}").Methods("GET").HandlerFunc(pubNote)
+	relayer.Router.Path("/pub/user/{pubkey:[A-Fa-f0-9]{64}}/note/{id:[A-Fa-f0-9]{64}}").Methods("GET").HandlerFunc(pubNote)
 	relayer.Router.Path("/.well-known/webfinger").HandlerFunc(webfinger)
 	relayer.Router.Path("/.well-known/nostr.json").HandlerFunc(handleNip05)
 

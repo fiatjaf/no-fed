@@ -13,7 +13,8 @@ require (
 	github.com/lib/pq v1.10.4
 	github.com/nbd-wtf/go-nostr v0.8.3
 	github.com/rs/zerolog v1.26.1
-	github.com/tidwall/gjson v1.14.1
+	github.com/tidwall/buntdb v1.2.10
+	github.com/tidwall/gjson v1.14.3
 	golang.org/x/exp v0.0.0-20221106115401-f9659909a136
 )
 
@@ -41,8 +42,12 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rogpeppe/go-internal v1.8.1 // indirect
 	github.com/rs/cors v1.7.0 // indirect
+	github.com/tidwall/btree v1.4.2 // indirect
+	github.com/tidwall/grect v0.1.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
+	github.com/tidwall/rtred v0.1.2 // indirect
+	github.com/tidwall/tinyqueue v0.1.1 // indirect
 	github.com/valyala/fastjson v1.6.3 // indirect
 	golang.org/x/sys v0.1.0 // indirect
 )

@@ -19,7 +19,7 @@ func pubUserActor(w http.ResponseWriter, r *http.Request) {
 
 	// try to get cached set_metadata event
 	var evt *nostr.Event
-	evt = getReplaceableEvent(pubkey, 0)
+	evt = getCachedMetadata(pubkey)
 	if evt == nil {
 		// try to get profile information from relays
 		events := querySync(nostr.Filter{Authors: []string{pubkey}, Kinds: []int{0}}, 1)
@@ -41,8 +41,13 @@ func pubUserFollowers(w http.ResponseWriter, r *http.Request) {
 	pubkey := mux.Vars(r)["pubkey"]
 	log.Debug().Str("pubkey", pubkey).Msg("got followers request")
 
-	// TODO: fill in this
-	followers := make([]string, 0)
+	var followers []string
+	pg.Select(&followers,
+		`SELECT pub_actor_url FROM followers WHERE nostr_pubkey = $1`,
+		pubkey,
+	)
+
+	// TODO: also search for kind-3
 
 	page := litepub.OrderedCollectionPage[string]{
 		Base: litepub.Base{
@@ -75,8 +80,25 @@ func pubUserFollowing(w http.ResponseWriter, r *http.Request) {
 	pubkey := mux.Vars(r)["pubkey"]
 	log.Debug().Str("pubkey", pubkey).Msg("got following request")
 
-	// TODO: fill in this
-	following := make([]string, 0)
+	var evt *nostr.Event
+	evt = getCachedContactList(pubkey)
+	if evt == nil {
+		// try to get contact list from relays
+		events := querySync(nostr.Filter{Authors: []string{pubkey}, Kinds: []int{3}}, 1)
+		if len(events) != 0 {
+			go cacheEvent(events[0])
+			evt = &events[0]
+		}
+	}
+
+	var following []string
+	if evt != nil {
+		ptags := evt.Tags.GetAll([]string{"p", ""})
+		following = make([]string, len(ptags))
+		for i, p := range ptags {
+			following[i] = p.Value()
+		}
+	}
 
 	page := litepub.OrderedCollectionPage[string]{
 		Base: litepub.Base{
@@ -109,7 +131,22 @@ func pubOutbox(w http.ResponseWriter, r *http.Request) {
 	pubkey := mux.Vars(r)["pubkey"]
 	log.Debug().Str("pubkey", pubkey).Msg("got outbox request")
 
-	events := querySync(nostr.Filter{Kinds: []int{1}, Authors: []string{pubkey}}, 40)
+	events := getNotesForPubkey(pubkey)
+
+	gatherNotes := func() []nostr.Event {
+		evts := querySync(nostr.Filter{Kinds: []int{1}, Authors: []string{pubkey}}, 40)
+		for _, evt := range evts {
+			go cacheEvent(evt)
+		}
+		return evts
+	}
+
+	if len(events) == 0 {
+		events = gatherNotes()
+	} else {
+		go gatherNotes()
+	}
+
 	creates := make([]litepub.Create[litepub.Note], len(events))
 	for i, evt := range events {
 		note := pubNoteFromNostrEvent(evt)
@@ -141,9 +178,13 @@ func pubOutbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func pubNote(w http.ResponseWriter, r *http.Request) {
+	pubkey := mux.Vars(r)["pubkey"]
 	noteId := mux.Vars(r)["id"]
+
 	// it's the same for nostr events
 	eventId := noteId
+
+	getNotesForPubkey(pubkey)
 
 	events := querySync(nostr.Filter{IDs: []string{eventId}}, 1)
 	if len(events) == 0 {

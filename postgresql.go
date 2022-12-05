@@ -35,6 +35,16 @@ CREATE TABLE IF NOT EXISTS notes (
   nostr_event_id text PRIMARY KEY
 );
 
+-- event cache
+CREATE TABLE IF NOT EXISTS cache (
+  key text PRIMARY KEY,
+  value text NOT NULL,
+  time int,
+  expiration int
+);
+CREATE INDEX IF NOT EXISTS prefixmatch ON cache(key text_pattern_ops);
+CREATE INDEX IF NOT EXISTS cachedeventorder ON cache (time);
+
 -- TODO: map of actual nostr pubkeys to relays and of nostr event ids to relays
     `)
 	if err != nil {
