@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"math/rand"
 	"time"
 
@@ -44,14 +45,18 @@ var _ = func() error {
 }()
 
 func querySync(filter nostr.Filter, max int) []nostr.Event {
+	ctx := context.Background()
 	events := make([]nostr.Event, 0, max)
 
 	for i := 0; i < 4; i++ {
 		ridx = ridx + 1
 
 		url := allRelays[ridx%n]
-		if r, err := nostr.RelayConnect(url); err == nil {
-			for _, newEvent := range r.QuerySync(filter, time.Millisecond*1500) {
+		subctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+
+		if r, err := nostr.RelayConnect(subctx, url); err == nil {
+			for _, newEvent := range r.QuerySync(subctx, filter) {
 				exists := false
 				for _, existing := range events {
 					if existing.ID == newEvent.ID {
